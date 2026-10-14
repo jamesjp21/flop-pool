@@ -4,7 +4,7 @@
 import { acct } from '../accounts';
 import { SERVICE_ACTORS, type CommandDef, type Tx } from '../engine';
 import { DomainError } from '../errors';
-import { formatAmount, minBig, parsePositiveAmount, usdc } from '../money';
+import { formatAmount, maxBig, minBig, parsePositiveAmount, usdc } from '../money';
 import { reserveSimOffers } from '../providers/simulated';
 import { balanceOf } from '../state';
 import { addHours, isBefore, toMs } from '../time';
@@ -131,9 +131,11 @@ export const demoCommands: CommandDef[] = [
       if (c.status !== 'funding') throw new DomainError('INVALID_STATE', 'Campaign is not open for funding.');
       const added: string[] = [];
       for (let i = 0; c.fundedUnits < c.terms.targetUnits; i++) {
-        if (i > 50) throw new Error('fillFunding: too many contributions');
+        if (i > 500) throw new DomainError('INVALID_STATE', 'Too many simulated participants would be needed; contribute directly instead.');
         const remaining = c.terms.targetUnits - c.fundedUnits;
-        let amount = minBig(usdc(FILL_PATTERN[i % FILL_PATTERN.length]), remaining);
+        const pattern = usdc(FILL_PATTERN[i % FILL_PATTERN.length]);
+        const scaled = pattern * (c.terms.targetUnits / usdc('3000') > 1n ? c.terms.targetUnits / usdc('3000') : 1n);
+        let amount = minBig(maxBig(scaled, c.terms.minContributionUnits), remaining);
         if (remaining - amount > 0n && remaining - amount < c.terms.minContributionUnits) amount = remaining;
         const userId = `u-sim-${String(Object.keys(tx.state.users).length + 1).padStart(2, '0')}`;
         tx.emit('user.registered', {

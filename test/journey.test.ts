@@ -369,3 +369,74 @@ describe('other outcomes', () => {
     expectError(() => run(e, DEMO_ACTOR, 'demo.advanceClock', { hours: 1 }), 'DEMO_DISABLED');
   });
 });
+
+describe('regressions from the accounting review', () => {
+  const started = () => {
+    const e = seededEngine();
+    run(e, ME, 'contribution.submit', { campaignId: 'C-001', amount: '600' });
+    run(e, OP, 'campaign.start', { campaignId: 'C-001' });
+    return e;
+  };
+  const running = (e: ReturnType<typeof seededEngine>, cid = 'C-001') =>
+    e.state.campaigns[cid].ops.deploymentIds.filter((id) => e.state.deployments[id].status === 'running');
+
+  it('a blacklist never leads to a second machine; ending stops and bills the one that runs', () => {
+    const e = started();
+    run(e, DEMO_ACTOR, 'demo.advanceClock', { hours: 10 });
+    run(e, DEMO_ACTOR, 'demo.simulateSlash', { minerId: 'M-01', amount: '10000', blacklist: true });
+    const c = () => e.state.campaigns['C-001'];
+    expect(c().ops.status).toBe('healthy'); // the machine is still running
+    expect(c().ops.openIncidentIds).toHaveLength(1);
+    expectError(() => run(e, OP, 'ops.retryRecovery', { campaignId: 'C-001' }), 'INVALID_STATE');
+    run(e, OP, 'incident.resolve', { incidentId: c().ops.openIncidentIds[0] });
+    // A later failure on a blacklisted miner escalates instead of redeploying.
+    run(e, DEMO_ACTOR, 'demo.injectFailure', { campaignId: 'C-001' });
+    expect(c().ops.status).toBe('manual_intervention');
+    expect(running(e)).toHaveLength(0);
+    expectError(() => run(e, OP, 'ops.retryRecovery', { campaignId: 'C-001' }), 'INVALID_STATE');
+    run(e, OP, 'campaign.end', { campaignId: 'C-001' });
+    expect(running(e)).toHaveLength(0);
+    expect(checkInvariants(e.state).filter((x) => !x.ok)).toEqual([]);
+  });
+
+  it('ending a campaign stops every running machine and bills it to the end', () => {
+    const e = started();
+    run(e, DEMO_ACTOR, 'demo.advanceClock', { hours: 10 });
+    run(e, OP, 'campaign.end', { campaignId: 'C-001' });
+    const dep = e.state.deployments['D-001'];
+    expect(dep.status).toBe('terminated');
+    expect(dep.rentalCostUnits).toBe(usdc('1.89') * 10n);
+  });
+
+  it('accepts equal timestamps written differently for a point-in-time receipt', () => {
+    const e = started();
+    run(e, DEMO_ACTOR, 'demo.advanceClock', { hours: 3 });
+    const r = run(e, OP, 'reward.recordReceipt', { minerId: 'M-01', kind: 'block_reward', amount: '10', earnedFrom: '2026-10-14T11:00:00Z', earnedTo: '2026-10-14T11:00:00.000Z', externalRef: 'sim-point-1' });
+    expect(r.lots.map((l: any) => l.campaignId)).toEqual(['C-001']);
+  });
+
+  it('treats external references case-insensitively', () => {
+    const e = started();
+    run(e, DEMO_ACTOR, 'demo.advanceClock', { hours: 3 });
+    const c = e.state.campaigns['C-001'];
+    run(e, OP, 'reward.recordReceipt', { minerId: 'M-01', kind: 'airdrop', amount: '10', earnedFrom: c.startedAt, earnedTo: e.state.clock, externalRef: '0xABCDEF0123' });
+    expectError(() => run(e, OP, 'reward.recordReceipt', { minerId: 'M-01', kind: 'airdrop', amount: '10', earnedFrom: c.startedAt, earnedTo: e.state.clock, externalRef: '0xabcdef0123' }), 'DUPLICATE_REFERENCE');
+    run(e, OP, 'reward.recordUnlock', { receiptId: 'R-001', amount: '1', externalRef: '0xFEED01' });
+    expectError(() => run(e, OP, 'reward.recordUnlock', { receiptId: 'R-001', amount: '1', externalRef: '0xfeed01' }), 'DUPLICATE_REFERENCE');
+  });
+
+  it('fills a campaign whose minimum is above the usual pattern', () => {
+    const e = seededEngine();
+    const r = run(e, OP, 'campaign.create', { name: 'High minimum campaign', minerId: 'M-01', target: '5000', minContribution: '1000', fundingDays: 10, termDays: 30 });
+    run(e, DEMO_ACTOR, 'demo.fillFunding', { campaignId: r.campaignId });
+    expect(e.state.campaigns[r.campaignId].status).toBe('funded');
+  });
+
+  it('records which allocation a full refund belongs to', () => {
+    const e = seededEngine();
+    run(e, ME, 'contribution.submit', { campaignId: 'C-001', amount: '600' });
+    run(e, OP, 'campaign.cancel', { campaignId: 'C-001' });
+    const ents = e.state.campaigns['C-001'].entitlementIds.map((id) => e.state.entitlements[id]);
+    for (const x of ents) expect(x.refundedUsdcUnits).toBe(x.contributedUnits);
+  });
+});

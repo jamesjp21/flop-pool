@@ -184,6 +184,10 @@ const reducers: Record<string, Reducer> = {
   },
   'deployment.running': (s, d: { deploymentId: string; instanceRef: string }, ev) => {
     const dep = s.deployments[d.deploymentId];
+    const current = s.campaigns[dep.campaignId].ops.activeDeploymentId;
+    if (current && current !== dep.id && s.deployments[current].status === 'running') {
+      throw new DomainError('LEDGER_INVARIANT', `${dep.campaignId} would have two running machines (${current}, ${dep.id}).`);
+    }
     dep.status = 'running';
     dep.runningAt = ev.at;
     dep.billedTo = ev.at;
@@ -264,7 +268,7 @@ const reducers: Record<string, Reducer> = {
   },
   'reward.receipt_recorded': (s, d: { receipt: RewardReceipt; lots: RewardLot[] }) => {
     s.receipts[d.receipt.id] = d.receipt;
-    s.externalRefs[`receipt:${d.receipt.externalRef}`] = d.receipt.id;
+    s.externalRefs[`receipt:${d.receipt.externalRef.toLowerCase()}`] = d.receipt.id;
     for (const lot of d.lots) {
       s.lots[lot.id] = lot;
       if (lot.campaignId) {
@@ -279,7 +283,7 @@ const reducers: Record<string, Reducer> = {
   },
   'reward.unlocked': (s, d: { unlock: UnlockRecord }) => {
     s.unlocks[d.unlock.id] = d.unlock;
-    s.externalRefs[`unlock:${d.unlock.externalRef}`] = d.unlock.id;
+    s.externalRefs[`unlock:${d.unlock.externalRef.toLowerCase()}`] = d.unlock.id;
     s.receipts[d.unlock.receiptId].unlockedUnits += d.unlock.amountUnits;
     for (const p of d.unlock.perLot) {
       s.lots[p.lotId].lockedRemainingUnits -= p.units;

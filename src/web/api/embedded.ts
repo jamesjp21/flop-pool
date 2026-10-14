@@ -15,7 +15,13 @@ import { ApiError, type ApiClient, type Role } from './types';
 interface DocSnap { exists: boolean; data(): Record<string, unknown> | undefined }
 interface QuerySnap { docs: DocSnap[] }
 interface Query { where(f: string, op: string, v: unknown): Query; orderBy(f: string, d?: 'asc' | 'desc'): Query; limit(n: number): Query; get(): Promise<QuerySnap> }
-interface DocRef { get(): Promise<DocSnap>; set(d: Record<string, unknown>): Promise<void>; delete(): Promise<void>; onSnapshot(n: (s: DocSnap) => void, e?: (err: unknown) => void): () => void }
+interface DocRef {
+  get(): Promise<DocSnap>;
+  set(d: Record<string, unknown>): Promise<void>;
+  delete(): Promise<void>;
+  onSnapshot(n: (s: DocSnap) => void, e?: (err: unknown) => void): () => void;
+  acquire?(o: { holder: string; ttlMs?: number }): Promise<{ acquired: boolean }>;
+}
 interface Collection extends Query { doc(id?: string): DocRef }
 interface Db { doc(path: string): DocRef; collection(path: string): Collection }
 
@@ -86,13 +92,20 @@ class ArtifactDbStore implements EventStore {
     await flush();
   }
 
+  /** Cooperative write lease on the head document, so two tabs never interleave an append. */
+  private async lease() {
+    const ref = this.headRef();
+    if (!ref.acquire) return;
+    const r = await ref.acquire({ holder: this.instanceId, ttlMs: 4_000 });
+    if (!r.acquired) throw conflict();
+  }
+
   async append(events: DomainEvent[]): Promise<void> {
     if (!events.length) return;
+    await this.lease();
     const head = await this.readHead();
     const expected = events[0].seq - 1;
-    if ((head?.lastSeq ?? 0) !== expected || (head && head.generation !== this.head.generation)) {
-      throw new DomainError('INVALID_STATE', 'The demo changed in another tab or window. It has been reloaded; please try again.', { conflict: true });
-    }
+    if ((head?.lastSeq ?? 0) !== expected || (head && head.generation !== this.head.generation)) throw conflict();
     const generation = head?.generation ?? this.head.generation;
     await this.writeChunks(generation, events);
     // Advancing the head is the commit point.
@@ -101,14 +114,15 @@ class ArtifactDbStore implements EventStore {
     this.head = { generation, lastSeq };
   }
 
-  async replaceAll(events: DomainEvent[]): Promise<void> {
+  async replaceAll(events: DomainEvent[], opts: { keepOld?: boolean } = {}): Promise<void> {
+    await this.lease();
     const head = await this.readHead();
     const generation = (head?.generation ?? 0) + 1;
     await this.writeChunks(generation, events);
     await this.headRef().set({ generation, lastSeq: events.length ? events[events.length - 1].seq : 0, writer: this.instanceId, updatedAt: new Date().toISOString() });
     const old = head?.generation;
     this.head = { generation, lastSeq: events.length ? events[events.length - 1].seq : 0 };
-    if (old !== undefined) void this.prune(old);
+    if (old !== undefined && !opts.keepOld) void this.prune(old);
   }
 
   private async prune(generation: number) {
@@ -135,6 +149,10 @@ class ArtifactDbStore implements EventStore {
   }
 }
 
+function conflict() {
+  return new DomainError('INVALID_STATE', 'The demo changed in another tab or window. It has been reloaded; please try again.', { conflict: true });
+}
+
 class LocalStore implements EventStore {
   readonly kind = 'browser-local';
   readonly label = 'Saved in this browser only';
@@ -145,10 +163,17 @@ class LocalStore implements EventStore {
     return raw ? decode<DomainEvent[]>(raw) : [];
   }
   async append(events: DomainEvent[]) {
+    if (!events.length) return;
     const all = await this.load();
+    // Another tab may have appended since this one loaded: refuse rather than interleave.
+    if ((all.length ? all[all.length - 1].seq : 0) !== events[0].seq - 1) throw conflict();
     localStorage.setItem(this.key, encode([...all, ...events]));
   }
-  async replaceAll(events: DomainEvent[]) {
+  async replaceAll(events: DomainEvent[], opts: { keepOld?: boolean } = {}) {
+    if (opts.keepOld) {
+      const raw = localStorage.getItem(this.key);
+      if (raw) localStorage.setItem(`${this.key}:set-aside:${Date.now()}`, raw);
+    }
     localStorage.setItem(this.key, encode(events));
   }
 }
@@ -201,12 +226,20 @@ function toApiError(e: unknown): never {
 export async function createEmbeddedApi(): Promise<ApiClient & { storageLabel: string }> {
   const store = await pickStore();
   let service: Service;
+  let note = '';
   try {
     service = await Service.open(store, { demoEnabled: true });
   } catch {
-    // A corrupt or incompatible saved log: start fresh rather than fail to load.
-    await store.replaceAll([]);
-    service = await Service.open(store, { demoEnabled: true });
+    // Maybe transient: try once more before touching anything.
+    await new Promise((r) => setTimeout(r, 800));
+    try {
+      service = await Service.open(store, { demoEnabled: true });
+    } catch {
+      // Unreadable saved log: set it aside (never delete it) and start a fresh demo.
+      await (store as EventStore & { replaceAll(e: DomainEvent[], o?: { keepOld?: boolean }): Promise<void> }).replaceAll([], { keepOld: true });
+      service = await Service.open(store, { demoEnabled: true });
+      note = ' The previous saved demo could not be read; it was set aside and a fresh demo started.';
+    }
   }
   const listeners = new Set<() => void>();
   if (store instanceof ArtifactDbStore) {
@@ -217,7 +250,7 @@ export async function createEmbeddedApi(): Promise<ApiClient & { storageLabel: s
   }
   return {
     mode: 'embedded',
-    storageLabel: store.label,
+    storageLabel: store.label + note,
     async view(name, params = {}) {
       try {
         return service.view(name, params) as any;

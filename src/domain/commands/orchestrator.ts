@@ -26,6 +26,14 @@ type Purpose = OfferEvaluation['purpose'];
 
 export function provision(tx: Tx, campaignId: string, purpose: Purpose, opts: { forcedOfferId?: string } = {}) {
   const c = requireCampaign(tx.state, campaignId);
+  const active = c.ops.activeDeploymentId ? tx.state.deployments[c.ops.activeDeploymentId] : undefined;
+  if (active?.status === 'running') {
+    throw new DomainError('INVALID_STATE', `${active.id} is already running for ${c.id}; a second machine will not be deployed.`);
+  }
+  if (tx.state.miners[c.minerId].status === 'blacklisted') {
+    openIncident(tx, c.id, 'miner_blacklisted', 'Miner account blacklisted: no replacement deployed', `Miner account ${c.minerId} is blacklisted, so no machine will be deployed for it. End the campaign.`, []);
+    return;
+  }
   const attempts: Incident['attempts'] = [];
   for (let attempt = 1; ; attempt++) {
     if (c.status !== 'running' || !c.termEndsAt) return;
@@ -135,7 +143,10 @@ export function openIncident(
     escalation: { recipient: ORCHESTRATION.escalationRecipient, channel: ORCHESTRATION.escalationChannel },
   };
   tx.emit('incident.opened', { incident });
-  if (c.status === 'running' && c.ops.status !== 'manual_intervention') {
+  // Only a miner with no working machine needs manual intervention. A blacklist incident
+  // asks for a decision but leaves the (still running) machine's status alone.
+  const machineRunning = c.ops.activeDeploymentId && tx.state.deployments[c.ops.activeDeploymentId]?.status === 'running';
+  if (c.status === 'running' && !machineRunning && c.ops.status !== 'manual_intervention') {
     tx.emit('ops.status_changed', { campaignId, status: 'manual_intervention', reason: title });
   }
   return incident;
@@ -192,7 +203,8 @@ export function accrueDeployment(tx: Tx, deploymentId: string) {
 export function accrueAll(tx: Tx) {
   tx.as(SERVICE_ACTORS.orchestrator, () => {
     for (const c of Object.values(tx.state.campaigns)) {
-      if (c.status === 'running' && c.ops.activeDeploymentId) accrueDeployment(tx, c.ops.activeDeploymentId);
+      if (c.status !== 'running') continue;
+      for (const id of c.ops.deploymentIds) if (tx.state.deployments[id].status === 'running') accrueDeployment(tx, id);
     }
   });
 }
@@ -222,6 +234,9 @@ export const orchestratorCommands: CommandDef[] = [
       const c = requireCampaign(tx.state, input.campaignId);
       if (c.status !== 'running' || c.ops.status !== 'manual_intervention') {
         throw new DomainError('INVALID_STATE', 'Recovery can only be retried while the campaign needs manual intervention.');
+      }
+      if (tx.state.miners[c.minerId].status === 'blacklisted') {
+        throw new DomainError('INVALID_STATE', `Miner account ${c.minerId} is blacklisted. End the campaign instead of deploying a machine.`);
       }
       tx.emit('ops.exclusions_cleared', { campaignId: c.id, reason: 'deploy_failed' });
       tx.emit('ops.status_changed', { campaignId: c.id, status: 'recovering', reason: 'Operator retried recovery' });

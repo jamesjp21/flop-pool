@@ -25,12 +25,17 @@ import { SERVICE_ACTORS, type CommandDef, type Tx } from '../engine';
 import { DomainError } from '../errors';
 import { apportion, formatAmount, mulDivFloor, parseAmount, parsePositiveAmount } from '../money';
 import { balanceOf } from '../state';
-import { isBefore, isValidIso, overlapMs, toMs } from '../time';
+import { isBefore, isValidIso, normalizeIso, overlapMs, toMs } from '../time';
 import type { Posting, RewardKind, RewardLot, RewardReceipt, State } from '../types';
 import { requireCampaign } from './campaigns';
 
 const KINDS: RewardKind[] = ['block_reward', 'session_payment', 'airdrop', 'other'];
 const UNATTRIBUTED = '__unattributed__';
+
+/** References are compared case-insensitively: hex transaction hashes are case-insensitive. */
+export function refKey(kind: 'receipt' | 'unlock', ref: string): string {
+  return `${kind}:${ref.toLowerCase()}`;
+}
 
 function cleanRef(v: unknown): string {
   const ref = typeof v === 'string' ? v.trim() : '';
@@ -90,14 +95,17 @@ export function recordReceipt(tx: Tx, input: ReceiptInput) {
   }
   if (liquid > amount) throw new DomainError('INVALID_INPUT', 'The liquid amount cannot exceed the total received.');
   if (!isValidIso(input.earnedFrom) || !isValidIso(input.earnedTo)) throw new DomainError('INVALID_INPUT', 'Earning period must be ISO timestamps.');
-  if (isBefore(input.earnedTo, input.earnedFrom)) throw new DomainError('INVALID_INPUT', 'Earning period ends before it starts.');
-  if (isBefore(tx.now, input.earnedTo)) throw new DomainError('INVALID_INPUT', 'Earning period cannot end in the future.');
+  const earnedFrom = normalizeIso(input.earnedFrom);
+  const earnedTo = normalizeIso(input.earnedTo);
+  if (isBefore(earnedTo, earnedFrom)) throw new DomainError('INVALID_INPUT', 'Earning period ends before it starts.');
+  if (isBefore(tx.now, earnedTo)) throw new DomainError('INVALID_INPUT', 'Earning period cannot end in the future.');
   const externalRef = cleanRef(input.externalRef);
-  if (tx.state.externalRefs[`receipt:${externalRef}`]) {
-    throw new DomainError('DUPLICATE_REFERENCE', `Receipt ${externalRef} was already recorded as ${tx.state.externalRefs[`receipt:${externalRef}`]}. It will not be credited twice.`);
+  const prior = tx.state.externalRefs[refKey('receipt', externalRef)];
+  if (prior) {
+    throw new DomainError('DUPLICATE_REFERENCE', `Receipt ${externalRef} was already recorded as ${prior}. It will not be credited twice.`);
   }
 
-  const weights = attributionWeights(tx.state, miner.id, input.earnedFrom, input.earnedTo, tx.now);
+  const weights = attributionWeights(tx.state, miner.id, earnedFrom, earnedTo, tx.now);
   const keys = [...weights.keys()];
   const amounts = apportion(amount, keys.map((k) => ({ key: k, weight: BigInt(weights.get(k)!), tiebreak: k })));
   const liquids = apportion(liquid, keys.map((k) => ({ key: k, weight: amounts.get(k)!, tiebreak: k })));
@@ -132,8 +140,8 @@ export function recordReceipt(tx: Tx, input: ReceiptInput) {
     liquidUnits: liquid,
     lockedUnits: amount - liquid,
     unlockedUnits: 0n,
-    earnedFrom: input.earnedFrom,
-    earnedTo: input.earnedTo,
+    earnedFrom,
+    earnedTo,
     externalRef,
     note: typeof input.note === 'string' ? input.note.trim().slice(0, 300) : '',
     recordedAt: tx.now,
@@ -153,7 +161,7 @@ export function recordUnlock(tx: Tx, input: { receiptId: string; amount: string;
     throw new DomainError('LOCKED_INSUFFICIENT', `Only ${formatAmount(remaining, 'FLOP')} is still locked on ${r.id}.`, { remainingUnits: remaining });
   }
   const externalRef = cleanRef(input.externalRef);
-  if (tx.state.externalRefs[`unlock:${externalRef}`]) {
+  if (tx.state.externalRefs[refKey('unlock', externalRef)]) {
     throw new DomainError('DUPLICATE_REFERENCE', `Unlock ${externalRef} was already recorded. It will not be applied twice.`);
   }
   const lots = r.lotIds.map((id) => tx.state.lots[id]).filter((l) => l.lockedRemainingUnits > 0n);

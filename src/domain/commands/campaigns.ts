@@ -5,7 +5,7 @@ import { DomainError } from '../errors';
 import { computeSettlementFee } from '../fees';
 import { apportion, formatAmount, parsePositiveAmount, percentString } from '../money';
 import { balanceOf } from '../state';
-import { addDays, isBefore, isValidIso } from '../time';
+import { addDays, isBefore, isValidIso, normalizeIso } from '../time';
 import type { Campaign, CostLine, Entitlement, HardwareRequirements, Refund, State } from '../types';
 import { accrueDeployment, provision } from './orchestrator';
 
@@ -66,7 +66,7 @@ export function createCampaign(tx: Tx, input: CreateCampaignInput): Campaign {
   let deadline: string;
   if (input.fundingDeadline !== undefined) {
     if (!isValidIso(input.fundingDeadline)) throw new DomainError('INVALID_INPUT', 'Funding deadline must be an ISO timestamp.');
-    deadline = input.fundingDeadline;
+    deadline = normalizeIso(input.fundingDeadline);
   } else {
     const days = Number(input.fundingDays ?? 14);
     if (!Number.isInteger(days) || days < 1 || days > 120) throw new DomainError('INVALID_INPUT', 'Funding window must be 1–120 whole days.');
@@ -235,8 +235,8 @@ export function endCampaign(tx: Tx, campaignId: string, reason: string) {
   const c = requireCampaign(tx.state, campaignId);
   if (c.status !== 'running') throw new DomainError('INVALID_STATE', `Only a running campaign can be ended (status: ${c.status}).`);
   tx.as(SERVICE_ACTORS.orchestrator, () => {
-    const depId = c.ops.activeDeploymentId;
-    if (depId) {
+    for (const depId of c.ops.deploymentIds) {
+      if (tx.state.deployments[depId].status !== 'running') continue;
       accrueDeployment(tx, depId);
       const dep = tx.state.deployments[depId];
       if (dep.status === 'running') {
@@ -289,7 +289,8 @@ function refundInFull(tx: Tx, c: Campaign, reason: Refund['reason']) {
   const refundIds: string[] = [];
   for (const [userId, v] of byUser) {
     const id = tx.nextId('RF', tx.state.refunds, 4);
-    tx.emit('refund.issued', { refund: { id, campaignId: c.id, userId, units: v.units, reason, at: tx.now }, contributionIds: v.ids }, [
+    const entitlementId = c.entitlementIds.find((e) => tx.state.entitlements[e].originalHolderId === userId);
+    tx.emit('refund.issued', { refund: { id, campaignId: c.id, userId, entitlementId, units: v.units, reason, at: tx.now }, contributionIds: v.ids }, [
       { asset: 'USDC', from: acct.budget(c.id), to: acct.wallet(userId), amount: v.units, memo: `Full refund ${id}` },
     ]);
     refundIds.push(id);

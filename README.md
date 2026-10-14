@@ -17,7 +17,7 @@ Requires Node 22.5+ (uses the built-in `node:sqlite`; no native dependencies).
 
 ```sh
 npm install
-npm test            # 55 tests: accounting, acceptance journey, restart, HTTP API, policy
+npm test            # 61 tests: accounting, acceptance journey, restart, HTTP API, policy, regressions
 npm run build       # typecheck + server + web + single-file preview page
 npm start           # http://127.0.0.1:8787 (loopback only)
 ```

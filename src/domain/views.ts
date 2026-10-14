@@ -330,7 +330,7 @@ export function viewOperator(s: State, env: Record<string, string | undefined> =
         canStart: c.status === 'funded',
         canEnd: c.status === 'running',
         canCancel: c.status === 'funding' || c.status === 'funded',
-        canRetry: c.status === 'running' && c.ops.status === 'manual_intervention',
+        canRetry: c.status === 'running' && c.ops.status === 'manual_intervention' && s.miners[c.minerId].status !== 'blacklisted',
         canFail: c.status === 'running' && c.ops.status === 'healthy',
         canFill: c.status === 'funding',
       },
@@ -401,6 +401,8 @@ export function checkInvariants(s: State) {
     const budget = balanceOf(s, acct.budget(c.id), 'USDC');
     const fee = c.settlement?.fee.usdcUnits ?? 0n;
     out.push({ name: `${c.id} budget = funded − spent − refunded − fee`, ok: budget === c.fundedUnits - c.spentUnits - c.refundedUnits - fee, detail: `budget ${budget}` });
+    const running = c.ops.deploymentIds.filter((id) => s.deployments[id].status === 'running').length;
+    out.push({ name: `${c.id} runs at most one machine (none once closed)`, ok: c.status === 'running' ? running <= 1 : running === 0, detail: `${running} running` });
     const locked = balanceOf(s, acct.rewardsLocked(c.id), 'FLOP');
     const undistributed = balanceOf(s, acct.rewardsUndistributed(c.id), 'FLOP');
     out.push({ name: `${c.id} locked rewards match lots`, ok: locked === c.rewards.lockedRemainingUnits, detail: `ledger ${locked}` });

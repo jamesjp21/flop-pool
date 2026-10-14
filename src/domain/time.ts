@@ -49,3 +49,8 @@ export function overlapMs(aFrom: string, aTo: string, bFrom: string, bTo: string
 export function isValidIso(v: unknown): v is string {
   return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?Z$/.test(v) && !Number.isNaN(Date.parse(v));
 }
+
+/** One canonical spelling per instant, so equal times compare equal as strings. */
+export function normalizeIso(iso: string): string {
+  return fromMs(toMs(iso));
+}

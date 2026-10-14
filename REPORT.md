@@ -44,7 +44,7 @@
 
 ## What was tested
 
-- `npm test`: 55 passing tests in 5 files.
+- `npm test`: 61 passing tests in 5 files.
   - money parsing and apportionment, including randomized splits;
   - the full acceptance journey, plus funding failure, cancellation, provider outage,
     distribution path-independence, stake slash, and demo mode switched off;
@@ -66,6 +66,24 @@
 - A real bug was found and fixed. Reducers had stored event payloads by reference, so later
   events silently rewrote earlier ones and replay double-counted funding. Reducers now get a
   private copy, and a replay-equality test guards it.
+- An independent adversarial review of the engine (with reproducing probes) confirmed five
+  issues. All were fixed and have regression tests (61 tests in total):
+  1. A blacklist incident on a healthy miner allowed a second machine to be deployed while
+     the first kept running unbilled. Now provisioning refuses while a machine runs, a
+     blacklisted miner is never redeployed, ending a campaign stops every running machine,
+     and the reducer rejects two running machines.
+  2. Equal timestamps written two different ways crashed point-in-time receipts. Timestamps
+     are now normalised before comparison.
+  3. Receipt and unlock references were case-sensitive, so a re-cased hex hash could
+     double-credit. They are now compared case-insensitively.
+  4. Two browser tabs could interleave writes to the preview's saved log. Writes are now
+     checked against the stored head and serialised with a lease. An unreadable log is set
+     aside, never wiped.
+  5. Two minor fixes: "fill funding" ignored high minimums, and full refunds did not record
+     which allocation they belonged to.
+  The review also confirmed as correct: contribution rules, freezing, settlement sums, window
+  boundaries, unlock routing, claims, idempotency across actors and commands, replay after a
+  JSON round trip, budget and clock handling, and serialized and atomic writes.
 
 ## What is simulated
 
@@ -103,7 +121,8 @@
 - The preview's artifact-database persistence could not be exercised from the build session.
   The database is empty until the page is first opened, which seeds it. If the database is
   unavailable, the page falls back to browser storage and the banner says so.
-- Two tabs writing at once: the second write is refused and the page reloads.
+- Two tabs writing at once: the second write is refused and the page reloads. Retry after a
+  few seconds.
 - No authentication, accounts or KYC. There is one demo participant.
 - Allocations cannot be transferred, and no insurance or cover exists. Both are intentional.
 - Duration bonus, fee model, stake supplier and unlock-inference funding are all unresolved.

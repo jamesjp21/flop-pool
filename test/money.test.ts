@@ -20,7 +20,9 @@ describe('parseAmount', () => {
 
 describe('formatAmount', () => {
   it('truncates rather than rounds up', () => {
-    expect(formatAmount(1_999_999n, 'USDC')).toBe('1.99 USDC');
+    expect(formatAmount(1_999_999n, 'USDC', { maxFraction: 2 })).toBe('1.99 USDC');
+    expect(formatAmount(1_999_999n, 'USDC')).toBe('1.999999 USDC');
+    expect(formatAmount(1_500_000n, 'USDC')).toBe('1.50 USDC');
     expect(formatAmount(usdc('2400'), 'USDC')).toBe('2,400.00 USDC');
     expect(formatAmount(10n ** 18n * 1234n + 5n * 10n ** 17n, 'FLOP')).toBe('1,234.5 FLOP');
   });

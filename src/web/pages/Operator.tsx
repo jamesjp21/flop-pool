@@ -73,6 +73,13 @@ function CampaignOpsView({ c, data }: { c: CampaignOps; data: OperatorView }) {
             </div>
             <h2>{card.name}</h2>
           </div>
+          {card.status === 'ended' || card.status === 'cancelled' || card.status === 'funding_failed' ? (
+            <span className="small muted" style={{ maxWidth: 360 }}>
+              {card.status === 'ended'
+                ? 'Closed and settled. Receipts and unlocks for its operating window are still credited to its holders.'
+                : 'Closed without operating. Every contribution was refunded in full.'}
+            </span>
+          ) : (
           <div className="row">
             <button
               className="btn btn-primary"
@@ -99,6 +106,7 @@ function CampaignOpsView({ c, data }: { c: CampaignOps; data: OperatorView }) {
               onConfirm={() => run('operator', 'campaign.cancel', { campaignId: card.id, reason: 'Cancelled by operator' }, `Cancelled ${card.id}; contributions refunded in full.`)}
             />
           </div>
+          )}
         </div>
         <div className="facts">
           <div className="fact"><span className="eyebrow">Funded</span><span className="v">{usd(card.fundedUnits)} / {usd(card.targetUnits)}</span></div>

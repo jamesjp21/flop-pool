@@ -67,7 +67,8 @@ export interface FormatOptions {
 /** Format base units as a decimal string. Truncates (never rounds up) so displays never overstate. */
 export function formatAmount(units: bigint, asset: Asset, opts: FormatOptions = {}): string {
   const decimals = DECIMALS[asset];
-  const maxFraction = opts.maxFraction ?? (asset === 'USDC' ? 2 : 4);
+  // USDC shows every micro-unit (min 2 decimals) so spent + returned always reconcile on screen.
+  const maxFraction = opts.maxFraction ?? (asset === 'USDC' ? 6 : 4);
   const minFraction = opts.minFraction ?? (asset === 'USDC' ? 2 : 0);
   const grouping = opts.grouping ?? true;
   const neg = units < 0n;

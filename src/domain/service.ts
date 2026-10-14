@@ -138,9 +138,9 @@ export class Service {
 }
 
 export class MemoryStore implements EventStore {
-  readonly kind = 'memory';
-  readonly label = 'In memory only (not saved)';
-  readonly durable = false;
+  readonly kind: string = 'memory';
+  readonly label: string = 'In memory only (not saved)';
+  readonly durable: boolean = false;
   private events: DomainEvent[] = [];
   async load() {
     return [...this.events];

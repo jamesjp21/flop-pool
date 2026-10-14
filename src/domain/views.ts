@@ -254,7 +254,7 @@ export function viewPortfolio(s: State, viewerId: string) {
     });
 
   const myEnts = new Map(Object.values(s.entitlements).filter((e) => e.holderId === viewerId).map((e) => [e.id, e]));
-  type Item = { at: string; order: number; kind: 'receipt' | 'unlock' | 'credit' | 'claim'; campaignId: string; title: string; detail: string; units?: bigint; ref?: string };
+  type Item = { at: string; order: number; kind: 'receipt' | 'unlock' | 'credit' | 'claim'; campaignId: string; title: string; detail: string; units?: bigint; lockedUnits?: bigint };
   const history: Item[] = [];
   for (const r of Object.values(s.receipts)) {
     for (const lotId of r.lotIds) {
@@ -270,7 +270,7 @@ export function viewPortfolio(s: State, viewerId: string) {
         title: `Campaign received a ${r.kind.replace('_', ' ')}`,
         detail: `${r.id} · earned ${r.earnedFrom.slice(0, 10)} → ${r.earnedTo.slice(0, 10)} · ref ${r.externalRef}`,
         units: share(lot.amountUnits, e),
-        ref: lot.lockedUnits > 0n ? `Your share includes ${share(lot.lockedUnits, e)} locked units` : undefined,
+        lockedUnits: lot.lockedUnits > 0n ? share(lot.lockedUnits, e) : undefined,
       });
     }
   }
